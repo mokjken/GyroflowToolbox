@@ -1,0 +1,77 @@
+name: Xcode - Build and Analyze
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Gyroflow Toolbox
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install FxPlug SDK
+        run: |
+          # 1. 创建 Xcode 寻找额外 SDK 的目标目录
+          sudo mkdir -p /Library/Developer/SDKs
+          
+          # 2. 从社区维护的 FxPlug SDK 镜像下载对应版本的 FxPlug.sdk 并解压到指定系统目录
+          # 这里使用的是常用于 CI 的 FxPlug 4 版本的开源打包备份
+          curl -L -o FxPlugSDK.zip https://github.com/tony-scialdone/FxPlug4-SDK-Mirror/archive/refs/heads/main.zip || \
+          curl -L -o FxPlugSDK.zip https://github.com/andymatuschak/FxPlug-SDK-Mirror/archive/refs/heads/master.zip
+          
+          unzip -q FxPlugSDK.zip
+          
+          # 寻找解压出来的 .sdk 文件夹并移动到系统位置
+          SDK_DIR=$(find . -name "*.sdk" -type d | head -n 1)
+          if [ -n "$SDK_DIR" ]; then
+            sudo cp -R "$SDK_DIR" /Library/Developer/SDKs/FxPlug.sdk
+            echo "✅ 成功安装 FxPlug SDK 到 /Library/Developer/SDKs/FxPlug.sdk"
+          else
+            echo "❌ 未能在解压文件中直接找到 .sdk 目录，尝试手动组装路径..."
+            # 兼容某些没有打包成标准 .sdk 结构的仓库，直接把 Frameworks 挂载上去
+            sudo mkdir -p /Library/Developer/SDKs/FxPlug.sdk
+            sudo cp -R ./* /Library/Developer/SDKs/FxPlug.sdk/ 2>/dev/null || true
+          fi
+          
+          # 验证路径是否存在
+          ls -la /Library/Developer/SDKs/FxPlug.sdk
+
+      - name: Build All Schemes
+        run: |
+          cd Source
+          
+          # 自动提取 Schemes 列表下的所有方案，逐个循环编译
+          xcodebuild -list | awk '/Schemes:/{flag=1; next} flag && !NF{flag=0} flag{$1=$1; print}' | while read -r SCHEME; do
+            echo "=========================================="
+            echo "🚀 开始自动编译方案: $SCHEME"
+            echo "=========================================="
+            
+            xcodebuild build \
+              -scheme "$SCHEME" \
+              -configuration Release \
+              -derivedDataPath ../build_output \
+              CODE_SIGNING_ALLOWED=NO \
+              CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGN_IDENTITY=""
+          done
+
+      - name: Package Artifacts
+        run: |
+          cd build_output/Build/Products/Release
+          # 打包编译出来的所有成果（App、Pluginkit 等）
+          zip -r Gyroflow_Toolbox_Compiled.zip . -x "*.tbd"
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Gyroflow-Toolbox-Free
+          path: build_output/Build/Products/Release/Gyroflow_Toolbox_Compiled.zip
